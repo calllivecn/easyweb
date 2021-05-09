@@ -7,14 +7,62 @@
 import os
 import ssl
 import socket
+import signal
 from urllib import parse
 from queue import Queue
 from threading import Thread, Lock
 from multiprocessing import Process
 
 
+from .config import (
+                        urls,
+)
+
+
+BUF_size = 4096
+
 class Request:
-    pass
+
+    def __init__(self, conn):
+        self.conn = conn
+
+        self.buffer = b""
+        cur = 0
+
+        while True:
+            buf = self.conn.recv(BUF_size)
+
+            if buf == b"":
+                # conn close
+                print("conn close")
+                self.conn.close()
+                break
+
+            self.buffer += buf
+
+            position = self.buffer.find(b"\r\n\r\n", cur)
+            cur += len(buf)
+            if position:
+                self.headers_pos = position
+                break
+    
+    def __requestline(self):
+        self.requestline_pos = self.buffer.find(b"\r\n")
+        self.requestline = self.buffer[:self.requestline_pos]
+
+        try:
+            self.method, self.path, self.protocol_version = self.requestline.split()
+        except ValueError:
+            self.conn.send(b"HTTP/1.1 400 bad request")
+            self.conn.close()
+            return
+    
+    def __headers(self):
+        self.headers = self.buffer[self.requestline_pos+2:self.headers_pos]
+
+        self.headers = self.headers.decode("ascii")
+
+
 
 class Route:
     pass
@@ -22,7 +70,10 @@ class Route:
 class View:
     pass
 
-class Handle:
+class Middleware:
+    pass
+
+class Handler:
     """
     每个请求的总的请求入口:
     1. 每个连接进来，首先走这里
@@ -31,8 +82,11 @@ class Handle:
     4. 中间件的列表调用，与维护。
     """
 
-    def __init__(self, sock):
-        self.sock = sock
+    def __init__(self, conn):
+        self.conn = conn
+
+        # url list
+        self.urls
 
     def __call__(self):
         pass
@@ -86,11 +140,9 @@ class ThreadPool:
     def __proc(self):
         while True:
             func, args, kwargs = self.q.get()
-
             if func == b"quit":
                 break
-
-            result = func(*args, **kwargs)
+            func(*args, **kwargs)
     
     def close(self):
         for _ in range(len(self._pools)):
@@ -115,8 +167,18 @@ class Server:
     def process(self):
         threadpool = ThreadPool()
         threadpool.submit()
+        pass
 
+    def signal_exit(self):
+        signal.handle(signal)
+        pass
 
     def close(self):
         for proc in self.procs:
             proc.terminate()
+    
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, typ, value, traceback):
+        self.close()
